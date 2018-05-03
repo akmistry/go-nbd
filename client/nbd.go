@@ -120,7 +120,8 @@ func (s *NbdServer) do(f *os.File) {
 	}()
 
 	start := time.Now()
-	var readCount, writeCount uint64
+	var readBytes, writeBytes uint64
+	var readCount, writeCount int
 	for {
 		var req request
 		err = readRequestTo(f, &req)
@@ -140,7 +141,8 @@ func (s *NbdServer) do(f *os.File) {
 			if err != nil {
 				return
 			}
-			readCount += uint64(req.length)
+			readBytes += uint64(req.length)
+			readCount++
 		case nbdCmdWrite:
 			_, err = s.block.WriteAt(req.data, int64(req.offset))
 			bm.put(req.data)
@@ -151,7 +153,8 @@ func (s *NbdServer) do(f *os.File) {
 			if err != nil {
 				return
 			}
-			writeCount += uint64(len(req.data))
+			writeBytes += uint64(len(req.data))
+			writeCount++
 		case nbdCmdDisc:
 			return
 		case nbdCmdFlush:
@@ -182,9 +185,14 @@ func (s *NbdServer) do(f *os.File) {
 
 		diff := time.Since(start)
 		if diff > time.Second {
-			readBw := float64(readCount) / (float64(diff) / float64(time.Second)) / (1024 * 1024)
-			writeBw := float64(writeCount) / (float64(diff) / float64(time.Second)) / (1024 * 1024)
-			log.Printf("read BW %0.3fM, write BW %0.3fM\n", readBw, writeBw)
+			td := float64(diff) / float64(time.Second)
+			readBw := float64(readBytes) / td / (1024 * 1024)
+			writeBw := float64(writeBytes) / td / (1024 * 1024)
+			readOps := float64(readCount) / td
+			writeOps := float64(writeCount) / td
+			log.Printf("read BW %0.3fM (%0.1f ops), write BW %0.3fM (%0.1f ops)\n",
+				readBw, readOps, writeBw, writeOps)
+			readBytes, writeBytes = 0, 0
 			readCount, writeCount = 0, 0
 			start = time.Now()
 		}

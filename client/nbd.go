@@ -16,12 +16,12 @@ type BlockDevice interface {
 	io.Closer
 
 	Readonly() bool
-	Size() uint64
-	BlockSize() uint32
+	Size() int64
+	BlockSize() int
 }
 
 type BlockDeviceTrimer interface {
-	Trim(off uint64, length uint32) error
+	Trim(off int64, length uint32) error
 }
 
 type BlockDeviceFlusher interface {
@@ -63,8 +63,8 @@ func (s *NbdServer) Run() error {
 		log.Println("Error setting NBD block size:", errno)
 		return errno
 	}
-	sizeBlocks := s.block.Size() / uint64(s.block.BlockSize())
-	if uint64(uintptr(sizeBlocks)) != sizeBlocks {
+	sizeBlocks := s.block.Size() / int64(s.block.BlockSize())
+	if int64(uintptr(sizeBlocks)) != sizeBlocks {
 		return fmt.Errorf("File size %d too big for arch, bs=%d, blocks=%d", s.block.Size(), s.block.BlockSize(), sizeBlocks)
 	}
 	_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdSetSizeBlocks, uintptr(sizeBlocks))
@@ -110,13 +110,13 @@ func (s *NbdServer) Disconnect() error {
 func (s *NbdServer) do(f *os.File) {
 	var err error
 	defer func() {
+		if err != nil {
+			log.Println("Error in main server loop", err)
+		}
 		unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdClearSock, 0)
 		unix.Close(s.devFd)
 		f.Close()
 		s.block.Close()
-		if err != nil {
-			log.Println("Error in main server loop", err)
-		}
 	}()
 
 	start := time.Now()
@@ -167,7 +167,7 @@ func (s *NbdServer) do(f *os.File) {
 				return
 			}
 		case nbdCmdTrim:
-			err = s.block.(BlockDeviceTrimer).Trim(req.offset, req.length)
+			err = s.block.(BlockDeviceTrimer).Trim(int64(req.offset), req.length)
 			if err != nil {
 				return
 			}

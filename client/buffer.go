@@ -1,34 +1,22 @@
 package client
 
-type bufferManager struct {
-	ch   chan []byte
-	size uint
+import (
+	"github.com/akmistry/go-util/bufferpool"
+)
+
+type Buffer struct {
+	buf []byte
 }
 
-func newBufferManager(size uint, buffers uint) *bufferManager {
-	return &bufferManager{ch: make(chan []byte, buffers), size: size}
-}
-
-func (m *bufferManager) get(size uint) []byte {
-	if size > m.size {
-		return make([]byte, size)
-	}
-
-	select {
-	case b := <-m.ch:
-		return b[:size]
-	default:
-		return make([]byte, size, m.size)
+func NewBuffer(size int) *Buffer {
+	return &Buffer{
+		buf: bufferpool.Get(size),
 	}
 }
 
-func (m *bufferManager) put(buf []byte) {
-	if uint(cap(buf)) != m.size {
-		return
+func (b *Buffer) Release() {
+	if b.buf != nil {
+		bufferpool.Put(b.buf)
 	}
-
-	select {
-	case m.ch <- buf[:cap(buf)]:
-	default:
-	}
+	b.buf = nil
 }

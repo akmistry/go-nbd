@@ -4,34 +4,30 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	"github.com/akmistry/go-util/bufferpool"
 )
 
-type request struct {
+type nbdRequest struct {
 	flags  uint16
 	cmd    uint16
 	handle uint64
 	offset uint64
 	length uint32
-	data   []byte
+	data   *Buffer
 }
 
-type reply struct {
-	err    uint32
+type nbdReply struct {
 	handle uint64
-	data   []byte
+	err    uint32
+	data   *Buffer
 }
 
 var (
 	nbo = binary.BigEndian
-	bm  = newBufferManager(256*1024, 4)
 )
 
-func readRequest(r io.Reader) (*request, error) {
-	req := new(request)
-	return req, readRequestTo(r, req)
-}
-
-func readRequestTo(r io.Reader, req *request) error {
+func readRequest(r io.Reader, req *nbdRequest) error {
 	var h [28]byte
 	_, err := io.ReadFull(r, h[:])
 	if err != nil {
@@ -48,31 +44,32 @@ func readRequestTo(r io.Reader, req *request) error {
 	req.length = nbo.Uint32(h[24:])
 	req.data = nil
 	if req.cmd == nbdCmdWrite {
-		req.data = bm.get(uint(req.length))
-		_, err = io.ReadFull(r, req.data)
+		req.data = NewBuffer(int(req.length))
+		_, err = io.ReadFull(r, req.data.buf)
 		if err != nil {
+			req.data.Release()
 			return err
 		}
 	}
 	return nil
 }
 
-func writeReply(w io.Writer, handle uint64, replyErr uint32, data []byte) error {
+func writeReply(w io.Writer, reply *nbdReply) error {
 	var header [16]byte
 	var b []byte
-	if len(data) > 0 {
+	if reply.data != nil {
 		// TODO: Determine if the total cost of doing a single write is smaller than doing two
 		// (without the alloc)
-		b = bm.get(uint(16 + len(data)))
-		defer bm.put(b)
+		b = bufferpool.Get(16 + len(reply.data.buf))
+		defer bufferpool.Put(b)
 	} else {
 		b = header[:]
 	}
 	nbo.PutUint32(b, nbdReplyMagic)
-	nbo.PutUint32(b[4:], replyErr)
-	nbo.PutUint64(b[8:], handle)
-	if len(data) > 0 {
-		copy(b[16:], data)
+	nbo.PutUint32(b[4:], reply.err)
+	nbo.PutUint64(b[8:], reply.handle)
+	if reply.data != nil {
+		copy(b[16:], reply.data.buf)
 	}
 	_, err := w.Write(b)
 	return err

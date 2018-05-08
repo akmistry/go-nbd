@@ -1,13 +1,24 @@
 package client
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"time"
+	"sync"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
+)
+
+const (
+	DefaultMaxConcurrentOps = 16
+)
+
+var (
+	ErrUnsupported = errors.New("nbd: unsupported operation")
 )
 
 type BlockDevice interface {
@@ -28,10 +39,16 @@ type BlockDeviceFlusher interface {
 	Flush() error
 }
 
+type ThreadedBlockDevice interface {
+	MaxConcurrentOps() int
+}
+
 type NbdServer struct {
 	devFd  int
 	sockfd int
 	block  BlockDevice
+
+	reqCh chan *nbdRequest
 }
 
 func NewServer(dev string, block BlockDevice) (*NbdServer, error) {
@@ -43,7 +60,11 @@ func NewServer(dev string, block BlockDevice) (*NbdServer, error) {
 }
 
 func NewServerFromFd(devFd int, block BlockDevice) (*NbdServer, error) {
-	return &NbdServer{devFd: devFd, block: block}, nil
+	return &NbdServer{
+		devFd: devFd,
+		block: block,
+		reqCh: make(chan *nbdRequest),
+	}, nil
 }
 
 func (s *NbdServer) Run() error {
@@ -107,94 +128,128 @@ func (s *NbdServer) Disconnect() error {
 	return nil
 }
 
-func (s *NbdServer) do(f *os.File) {
+var (
+	reqPool   = sync.Pool{New: func() interface{} { return new(nbdRequest) }}
+	replyPool = sync.Pool{New: func() interface{} { return new(nbdReply) }}
+)
+
+func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
+	reply := replyPool.Get().(*nbdReply)
+	reply.handle = req.handle
+	reply.err = 0
+	reply.data = nil
+
 	var err error
-	defer func() {
-		if err != nil {
-			log.Println("Error in main server loop", err)
-		}
-		unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdClearSock, 0)
-		unix.Close(s.devFd)
-		f.Close()
-		s.block.Close()
-	}()
+	switch req.cmd {
+	case nbdCmdRead:
+		reply.data = NewBuffer(int(req.length))
+		_, err = s.block.ReadAt(reply.data.buf, int64(req.offset))
+	case nbdCmdWrite:
+		_, err = s.block.WriteAt(req.data.buf, int64(req.offset))
+	case nbdCmdFlush:
+		err = s.block.(BlockDeviceFlusher).Flush()
+	case nbdCmdTrim:
+		log.Printf("Trim off: %d, len: %d", req.offset, req.length)
+		err = s.block.(BlockDeviceTrimer).Trim(int64(req.offset), req.length)
+	case nbdCmdCache:
+		fallthrough
+	case nbdCmdWriteZeroes:
+		fallthrough
+	default:
+		log.Println("Unsupported operation", req.cmd)
+		err = ErrUnsupported
+	}
+	if err != nil {
+		log.Printf("request error: %v", err)
+		reply.err = nbdEio
+		//return nil, err
+	}
+	return reply, nil
+}
 
-	start := time.Now()
-	var readBytes, writeBytes uint64
-	var readCount, writeCount int
-	for {
-		var req request
-		err = readRequestTo(f, &req)
-		if err != nil {
-			return
-		}
+func (s *NbdServer) do(f *os.File) {
+	g, ctx := errgroup.WithContext(context.Background())
 
-		switch req.cmd {
-		case nbdCmdRead:
-			data := bm.get(uint(req.length))
-			_, err = s.block.ReadAt(data, int64(req.offset))
-			if err != nil {
-				return
-			}
-			err = writeReply(f, req.handle, 0, data)
-			bm.put(data)
-			if err != nil {
-				return
-			}
-			readBytes += uint64(req.length)
-			readCount++
-		case nbdCmdWrite:
-			_, err = s.block.WriteAt(req.data, int64(req.offset))
-			bm.put(req.data)
-			if err != nil {
-				return
-			}
-			err = writeReply(f, req.handle, 0, nil)
-			if err != nil {
-				return
-			}
-			writeBytes += uint64(len(req.data))
-			writeCount++
-		case nbdCmdDisc:
-			return
-		case nbdCmdFlush:
-			err = s.block.(BlockDeviceFlusher).Flush()
-			if err != nil {
-				return
-			}
-			err = writeReply(f, req.handle, 0, nil)
-			if err != nil {
-				return
-			}
-		case nbdCmdTrim:
-			err = s.block.(BlockDeviceTrimer).Trim(int64(req.offset), req.length)
-			if err != nil {
-				return
-			}
-			err = writeReply(f, req.handle, 0, nil)
-			if err != nil {
-				return
-			}
-		case nbdCmdCache:
-			fallthrough
-		case nbdCmdWriteZeroes:
-			fallthrough
-		default:
-			log.Panicln("Unsupported operation", req.cmd)
-		}
+	var replyLock sync.Mutex
 
-		diff := time.Since(start)
-		if diff > time.Second {
-			td := float64(diff) / float64(time.Second)
-			readBw := float64(readBytes) / td / (1024 * 1024)
-			writeBw := float64(writeBytes) / td / (1024 * 1024)
-			readOps := float64(readCount) / td
-			writeOps := float64(writeCount) / td
-			log.Printf("read BW %0.3fM (%0.1f ops), write BW %0.3fM (%0.1f ops)\n",
-				readBw, readOps, writeBw, writeOps)
-			readBytes, writeBytes = 0, 0
-			readCount, writeCount = 0, 0
-			start = time.Now()
+	workers := 1
+	if tbd, ok := s.block.(ThreadedBlockDevice); ok {
+		workers = tbd.MaxConcurrentOps()
+		if workers <= 0 {
+			workers = DefaultMaxConcurrentOps
 		}
 	}
+	for i := 0; i < workers; i++ {
+		g.Go(func() error {
+			var req *nbdRequest
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case req = <-s.reqCh:
+					if req == nil {
+						return nil
+					}
+				}
+
+				reply, err := s.doRequest(req)
+				if err != nil {
+					return err
+				}
+				if req.data != nil {
+					req.data.Release()
+					req.data = nil
+				}
+				reqPool.Put(req)
+
+				replyLock.Lock()
+				err = writeReply(f, reply)
+				replyLock.Unlock()
+
+				if reply.data != nil {
+					reply.data.Release()
+					reply.data = nil
+				}
+				if err != nil {
+					log.Printf("Error writing NBD reply: %v", err)
+					return err
+				}
+				replyPool.Put(reply)
+			}
+		})
+	}
+
+	go func() {
+		err := g.Wait()
+		if err != nil {
+			s.Disconnect()
+		}
+	}()
+
+	var err error
+	for {
+		req := reqPool.Get().(*nbdRequest)
+		err = readRequest(f, req)
+		if err != nil {
+			break
+		}
+
+		if req.cmd == nbdCmdDisc {
+			break
+		}
+
+		s.reqCh <- req
+	}
+	close(s.reqCh)
+
+	if err != nil {
+		log.Println("Error in main server loop", err)
+	}
+
+	g.Wait()
+	unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdClearSock, 0)
+	unix.Close(s.devFd)
+	f.Close()
+	s.block.Close()
+
 }

@@ -29,6 +29,7 @@ type BlockDevice interface {
 	Readonly() bool
 	Size() int64
 	BlockSize() int
+	MaxConcurrentOps() int
 }
 
 type BlockDeviceTrimer interface {
@@ -37,10 +38,6 @@ type BlockDeviceTrimer interface {
 
 type BlockDeviceFlusher interface {
 	Flush() error
-}
-
-type ThreadedBlockDevice interface {
-	MaxConcurrentOps() int
 }
 
 type NbdServer struct {
@@ -172,13 +169,11 @@ func (s *NbdServer) do(f *os.File) {
 
 	var replyLock sync.Mutex
 
-	workers := 1
-	if tbd, ok := s.block.(ThreadedBlockDevice); ok {
-		workers = tbd.MaxConcurrentOps()
-		if workers <= 0 {
-			workers = DefaultMaxConcurrentOps
-		}
+	workers := s.block.MaxConcurrentOps()
+	if workers <= 0 {
+		workers = DefaultMaxConcurrentOps
 	}
+
 	for i := 0; i < workers; i++ {
 		g.Go(func() error {
 			var req *nbdRequest

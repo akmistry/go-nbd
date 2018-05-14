@@ -17,6 +17,10 @@ func (f *FileBlockDevice) Readonly() bool {
 	return false
 }
 
+func (f *FileBlockDevice) MaxConcurrentOps() int {
+	return 1
+}
+
 func (f *FileBlockDevice) Size() int64 {
 	info, err := f.file.Stat()
 	if err != nil {

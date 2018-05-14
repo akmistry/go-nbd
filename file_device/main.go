@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/akmistry/go-nbd/client"
+	"github.com/akmistry/go-nbd"
 )
 
 var (
@@ -33,7 +33,7 @@ func main() {
 		log.Panicln(err)
 	}
 
-	nbd, err := client.NewServer(*dev, client.NewFileBlockDevice(f))
+	nbdDevice, err := nbd.NewServer(*dev, NewFileBlockDevice(f))
 	if err != nil {
 		log.Panicln(err)
 	}
@@ -42,8 +42,8 @@ func main() {
 	signal.Notify(ch, os.Interrupt)
 	go func() {
 		<-ch
-		nbd.Disconnect()
+		nbdDevice.Disconnect()
 	}()
 
-	log.Println(nbd.Run())
+	log.Println(nbdDevice.Run())
 }

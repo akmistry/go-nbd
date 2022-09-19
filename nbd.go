@@ -45,7 +45,12 @@ type NbdServer struct {
 	sockfd int
 	block  BlockDevice
 
-	reqCh chan *nbdRequest
+	// Netlink stuff
+	nlConn *NetlinkConn
+	index  int
+
+	reqCh  chan *nbdRequest
+	doneCh chan bool
 }
 
 func NewServer(dev string, block BlockDevice) (*NbdServer, error) {
@@ -58,19 +63,58 @@ func NewServer(dev string, block BlockDevice) (*NbdServer, error) {
 
 func NewServerFromFd(devFd int, block BlockDevice) (*NbdServer, error) {
 	return &NbdServer{
-		devFd: devFd,
-		block: block,
-		reqCh: make(chan *nbdRequest),
+		devFd:  devFd,
+		block:  block,
+		reqCh:  make(chan *nbdRequest),
+		doneCh: make(chan bool),
 	}, nil
+}
+
+func NewServerWithNetlink(index int, block BlockDevice) (*NbdServer, error) {
+	nl, err := NewNetlinkConn()
+	if err != nil {
+		return nil, err
+	}
+
+	return &NbdServer{
+		block:  block,
+		nlConn: nl,
+		index:  index,
+		reqCh:  make(chan *nbdRequest),
+		doneCh: make(chan bool),
+	}, nil
+}
+
+func (s *NbdServer) runNetlink(f *os.File, fd int) error {
+	s.nlConn.SetFd(fd)
+	s.nlConn.SetSize(uint64(s.block.Size()))
+	s.nlConn.SetBlockSize(uint64(s.block.BlockSize()))
+
+	err := s.nlConn.Connect()
+	if err != nil {
+		f.Close()
+		log.Println("Error connecting to NBD: ", err)
+		return err
+	}
+
+	go s.do(f)
+	<-s.doneCh
+
+	return nil
 }
 
 func (s *NbdServer) Run() error {
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 	if err != nil {
-		log.Println("Error creating socket pair:", err)
+		log.Println("Error creating socket pair: ", err)
 		return err
 	}
 	f := os.NewFile(uintptr(fds[1]), "nbd-sock")
+
+	if s.nlConn != nil {
+		return s.runNetlink(f, fds[0])
+	}
+
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdSetSock, uintptr(fds[0]))
 	if errno != 0 {
 		log.Println("Error setting NBD socket:", errno)
@@ -114,10 +158,15 @@ func (s *NbdServer) Run() error {
 	if errno != 0 {
 		return errno
 	}
+
 	return nil
 }
 
 func (s *NbdServer) Disconnect() error {
+	if s.nlConn != nil {
+		return s.nlConn.Disconnect()
+	}
+
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdDisconnect, 0)
 	if errno != 0 {
 		return errno
@@ -165,6 +214,9 @@ func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
 }
 
 func (s *NbdServer) do(f *os.File) {
+	defer close(s.doneCh)
+	defer f.Close()
+
 	g, ctx := errgroup.WithContext(context.Background())
 
 	var replyLock sync.Mutex
@@ -242,9 +294,9 @@ func (s *NbdServer) do(f *os.File) {
 	}
 
 	g.Wait()
-	unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdClearSock, 0)
-	unix.Close(s.devFd)
-	f.Close()
+	if s.nlConn == nil {
+		unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdClearSock, 0)
+		unix.Close(s.devFd)
+	}
 	s.block.Close()
-
 }

@@ -113,3 +113,24 @@ const (
 	nbdEoverflow = 75  // Defined in the experimental STRUCTURED_REPLY extension.
 	nbdEshutdown = 108 // Server is in the process of being shut down.
 )
+
+// Netlink interface constants
+const (
+	nbdNlFamilyName = "nbd"
+	nbdNlVersion    = 1
+
+	nbdNlAttrIndex          = 1
+	nbdNlAttrSizeBytes      = 2
+	nbdNlAttrBlockSizeBytes = 3
+	nbdNlAttrTimeout        = 4
+	nbdNlAttrServerFlags    = 5
+	nbdNlAttrClientFlags    = 6
+	nbdNlAttrSockets        = 7
+
+	nbdNlSockItem = 1
+
+	nbdNlSockFd = 1
+
+	nbdNlCmdConnect    = 1
+	nbdNlCmdDisconnect = 2
+)

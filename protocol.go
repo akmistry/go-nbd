@@ -4,6 +4,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
+	"runtime"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/akmistry/go-util/bufferpool"
 )
@@ -55,9 +60,11 @@ func readRequest(r io.Reader, req *nbdRequest) error {
 }
 
 func writeReply(w io.Writer, reply *nbdReply) error {
+	osf, fileOk := w.(*os.File)
+
 	var header [16]byte
 	var b []byte
-	if reply.data != nil {
+	if reply.data != nil && !fileOk {
 		// TODO: Determine if the total cost of doing a single write is smaller than doing two
 		// (without the alloc)
 		b = bufferpool.Get(16 + len(reply.data.buf))
@@ -69,6 +76,20 @@ func writeReply(w io.Writer, reply *nbdReply) error {
 	nbo.PutUint32(b[4:], reply.err)
 	nbo.PutUint64(b[8:], reply.handle)
 	if reply.data != nil {
+		if fileOk {
+			var iov [2][]byte
+			iov[0] = b
+			iov[1] = reply.data.buf
+			for {
+				_, err := unix.Writev(int(osf.Fd()), iov[:])
+				runtime.KeepAlive(osf)
+				if errno, ok := err.(syscall.Errno); ok && errno == unix.EINTR {
+					// Try again
+					continue
+				}
+				return err
+			}
+		}
 		copy(b[16:], reply.data.buf)
 	}
 	_, err := w.Write(b)

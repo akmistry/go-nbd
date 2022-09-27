@@ -126,7 +126,7 @@ func NewServerWithNetlink(index int, block BlockDevice, size int64, opts BlockDe
 		return nil, err
 	}
 
-	nl, err := NewNetlinkConn()
+	nl, err := NewNetlinkConn(index)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +143,6 @@ func NewServerWithNetlink(index int, block BlockDevice, size int64, opts BlockDe
 }
 
 func (s *NbdServer) runNetlink(f *os.File, fd int) error {
-	s.nlConn.SetIndex(s.index)
 	s.nlConn.SetFd(fd)
 	s.nlConn.SetSize(uint64(s.size))
 	s.nlConn.SetBlockSize(uint64(s.opts.BlockSize))

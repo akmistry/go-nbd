@@ -8,17 +8,17 @@ import (
 type NetlinkConn struct {
 	conn   *genetlink.Conn
 	family genetlink.Family
+	index  int
 
 	fd             int
 	sizeBytes      uint64
 	blockSizeBytes uint64
-	index          int
 	readOnly       bool
 	supportsTrim   bool
 	supportsFlush  bool
 }
 
-func NewNetlinkConn() (*NetlinkConn, error) {
+func NewNetlinkConn(index int) (*NetlinkConn, error) {
 	conn, err := genetlink.Dial(&netlink.Config{Strict: true})
 	if err != nil {
 		return nil, err
@@ -30,7 +30,7 @@ func NewNetlinkConn() (*NetlinkConn, error) {
 		return nil, err
 	}
 
-	return &NetlinkConn{conn: conn, family: family}, nil
+	return &NetlinkConn{conn: conn, family: family, index: index}, nil
 }
 
 func (c *NetlinkConn) SetFd(fd int) {
@@ -43,10 +43,6 @@ func (c *NetlinkConn) SetSize(size uint64) {
 
 func (c *NetlinkConn) SetBlockSize(size uint64) {
 	c.blockSizeBytes = size
-}
-
-func (c *NetlinkConn) SetIndex(index int) {
-	c.index = index
 }
 
 func (c *NetlinkConn) SetReadonly(ro bool) {
@@ -63,9 +59,7 @@ func (c *NetlinkConn) SetSupportsFlush(flush bool) {
 
 func (c *NetlinkConn) Connect() error {
 	enc := netlink.NewAttributeEncoder()
-	if c.index >= 0 {
-		enc.Uint32(nbdNlAttrIndex, uint32(c.index))
-	}
+	enc.Uint32(nbdNlAttrIndex, uint32(c.index))
 	enc.Uint64(nbdNlAttrSizeBytes, c.sizeBytes)
 	enc.Uint64(nbdNlAttrBlockSizeBytes, c.blockSizeBytes)
 	enc.Uint64(nbdNlAttrClientFlags, nbdClientFlagDestroyOnDisconnect)

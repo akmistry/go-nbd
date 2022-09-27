@@ -1,15 +1,20 @@
 package main
 
 import (
+	"log"
 	"os"
-)
+	"sync"
+	"sync/atomic"
+	"syscall"
 
-const (
-	oneMeg = 1024 * 1024
+	"golang.org/x/sys/unix"
 )
 
 var (
-	zeroBuffer = make([]byte, oneMeg)
+	enosysOnce    sync.Once
+	eopnotsupOnce sync.Once
+
+	punchHoleUnsupported atomic.Bool
 )
 
 type FileBlockDevice struct {
@@ -25,24 +30,30 @@ func (f *FileBlockDevice) Flush() error {
 }
 
 func (f *FileBlockDevice) Trim(off int64, length uint32) error {
-	// Writing zeros allows the underlying filesystem to make the file sparse,
-	// or optimise the stored file data.
-	// Alternatively, use fallocate(FALLOC_FL_PUNCH_HOLE).
-	return f.writeZeros(off, length)
-}
-
-func (f *FileBlockDevice) writeZeros(off int64, length uint32) error {
-	for i := int64(0); i < int64(length); i += oneMeg {
-		start := off + i
-		end := off + i + oneMeg
-		if end > (off + int64(length)) {
-			end = off + int64(length)
-		}
-		l := end - start
-		_, err := f.WriteAt(zeroBuffer[:l], start)
-		if err != nil {
-			return err
-		}
+	if punchHoleUnsupported.Load() {
+		return nil
 	}
-	return nil
+
+	log.Printf("Trim off: %d, len: %d", off, length)
+	err := unix.Fallocate(int(f.Fd()), unix.FALLOC_FL_KEEP_SIZE|unix.FALLOC_FL_PUNCH_HOLE, off, int64(length))
+	if err != nil {
+		if errno, ok := err.(syscall.Errno); ok {
+			switch errno {
+			case unix.ENOSYS:
+				punchHoleUnsupported.Store(true)
+				enosysOnce.Do(func() {
+					log.Println("fallocate() not supported")
+				})
+				return nil
+			case unix.EOPNOTSUPP:
+				punchHoleUnsupported.Store(true)
+				eopnotsupOnce.Do(func() {
+					log.Println("fallocate(FALLOC_FL_PUNCH_HOLE) not supported on this filesystem")
+				})
+				return nil
+			}
+		}
+		log.Println("fallocate() error: ", err)
+	}
+	return err
 }

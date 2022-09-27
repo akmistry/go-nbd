@@ -262,7 +262,6 @@ func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
 	case nbdCmdFlush:
 		err = s.block.(BlockDeviceFlusher).Flush()
 	case nbdCmdTrim:
-		log.Printf("Trim off: %d, len: %d", req.offset, req.length)
 		err = s.block.(BlockDeviceTrimer).Trim(int64(req.offset), req.length)
 	case nbdCmdCache:
 		fallthrough

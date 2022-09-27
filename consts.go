@@ -41,6 +41,7 @@ const (
 	nbdFlagSendTrim        = 1 << 5
 	nbdFlagSendWriteZeroes = 1 << 6
 	nbdFlagSendDf          = 1 << 7
+	nbdFlagCanMultiConn    = 1 << 8
 
 	nbdClientFlagDestroyOnDisconnect = 1 << 0
 	nbdClientFlagDisconnectOnClose   = 1 << 1

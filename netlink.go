@@ -10,7 +10,7 @@ type NetlinkConn struct {
 	family genetlink.Family
 	index  int
 
-	fd             int
+	fds            []int
 	sizeBytes      uint64
 	blockSizeBytes uint64
 	readOnly       bool
@@ -33,8 +33,8 @@ func NewNetlinkConn(index int) (*NetlinkConn, error) {
 	return &NetlinkConn{conn: conn, family: family, index: index}, nil
 }
 
-func (c *NetlinkConn) SetFd(fd int) {
-	c.fd = fd
+func (c *NetlinkConn) AddFd(fd int) {
+	c.fds = append(c.fds, fd)
 }
 
 func (c *NetlinkConn) SetSize(size uint64) {
@@ -64,6 +64,9 @@ func (c *NetlinkConn) Connect() error {
 	enc.Uint64(nbdNlAttrBlockSizeBytes, c.blockSizeBytes)
 	enc.Uint64(nbdNlAttrClientFlags, nbdClientFlagDestroyOnDisconnect)
 	var flags uint64
+	if len(c.fds) > 1 {
+		flags |= nbdFlagCanMultiConn
+	}
 	if c.readOnly {
 		flags |= nbdFlagReadOnly
 	}
@@ -77,11 +80,16 @@ func (c *NetlinkConn) Connect() error {
 		enc.Uint64(nbdNlAttrServerFlags, flags)
 	}
 
+	if len(c.fds) == 0 {
+		panic("At least 1 FD must be added")
+	}
 	enc.Nested(nbdNlAttrSockets, func(nae *netlink.AttributeEncoder) error {
-		nae.Nested(nbdNlSockItem, func(nae *netlink.AttributeEncoder) error {
-			nae.Uint32(nbdNlSockFd, uint32(c.fd))
-			return nil
-		})
+		for _, fd := range c.fds {
+			nae.Nested(nbdNlSockItem, func(nae *netlink.AttributeEncoder) error {
+				nae.Uint32(nbdNlSockFd, uint32(fd))
+				return nil
+			})
+		}
 		return nil
 	})
 

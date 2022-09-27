@@ -142,8 +142,10 @@ func NewServerWithNetlink(index int, block BlockDevice, size int64, opts BlockDe
 	}, nil
 }
 
-func (s *NbdServer) runNetlink(f *os.File, fd int) error {
-	s.nlConn.SetFd(fd)
+func (s *NbdServer) runNetlink(fs []*os.File, fds []int) error {
+	for _, fd := range fds {
+		s.nlConn.AddFd(fd)
+	}
 	s.nlConn.SetSize(uint64(s.size))
 	s.nlConn.SetBlockSize(uint64(s.opts.BlockSize))
 
@@ -159,12 +161,14 @@ func (s *NbdServer) runNetlink(f *os.File, fd int) error {
 
 	err := s.nlConn.Connect()
 	if err != nil {
-		f.Close()
+		for _, f := range fs {
+			f.Close()
+		}
 		log.Println("Error connecting to NBD: ", err)
 		return err
 	}
 
-	go s.do(f)
+	go s.do(fs)
 	<-s.doneCh
 
 	return nil
@@ -177,9 +181,21 @@ func (s *NbdServer) Run() error {
 		return err
 	}
 	f := os.NewFile(uintptr(fds[1]), "nbd-sock")
+	fs := []*os.File{f}
 
 	if s.nlConn != nil {
-		return s.runNetlink(f, fds[0])
+		kernelFds := []int{fds[0]}
+		// TODO: This is probably too many
+		for i := 1; i < s.opts.ConcurrentOps; i++ {
+			fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+			if err != nil {
+				log.Println("Error creating extra socket pair: ", err)
+				break
+			}
+			kernelFds = append(kernelFds, fds[0])
+			fs = append(fs, os.NewFile(uintptr(fds[1]), "nbd-sock"))
+		}
+		return s.runNetlink(fs, kernelFds)
 	}
 
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdSetSock, uintptr(fds[0]))
@@ -220,7 +236,7 @@ func (s *NbdServer) Run() error {
 		}
 	}
 
-	go s.do(f)
+	go s.do(fs)
 	_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(s.devFd), nbdDoIt, 0)
 	if errno != 0 {
 		return errno
@@ -279,13 +295,16 @@ func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
 	return reply, nil
 }
 
-func (s *NbdServer) do(f *os.File) {
+func (s *NbdServer) do(fs []*os.File) {
 	defer close(s.doneCh)
-	defer f.Close()
+	for _, f := range fs {
+		defer f.Close()
+	}
 
-	g, ctx := errgroup.WithContext(context.Background())
+	ctx, cf := context.WithCancel(context.Background())
+	g, ctx := errgroup.WithContext(ctx)
 
-	var replyLock sync.Mutex
+	replyLocks := make([]sync.Mutex, len(fs))
 
 	workers := s.opts.ConcurrentOps
 	if workers <= 0 {
@@ -293,6 +312,7 @@ func (s *NbdServer) do(f *os.File) {
 	}
 
 	for i := 0; i < workers; i++ {
+		replyIndex := i % len(fs)
 		g.Go(func() error {
 			var req *nbdRequest
 			for {
@@ -315,9 +335,10 @@ func (s *NbdServer) do(f *os.File) {
 				}
 				reqPool.Put(req)
 
-				replyLock.Lock()
-				err = writeReply(f, reply)
-				replyLock.Unlock()
+				l := replyLocks[replyIndex]
+				l.Lock()
+				err = writeReply(fs[replyIndex], reply)
+				l.Unlock()
 
 				if reply.data != nil {
 					reply.data.Release()
@@ -332,28 +353,35 @@ func (s *NbdServer) do(f *os.File) {
 		})
 	}
 
-	go func() {
-		err := g.Wait()
-		if err != nil {
-			s.Disconnect()
-		}
-	}()
+	for i := range fs {
+		readFile := fs[i]
+		g.Go(func() error {
+			for {
+				req := reqPool.Get().(*nbdRequest)
+				err := readRequest(readFile, req)
+				if err != nil {
+					return err
+				}
 
-	var err error
-	for {
-		req := reqPool.Get().(*nbdRequest)
-		err = readRequest(f, req)
-		if err != nil {
-			break
-		}
+				if req.cmd == nbdCmdDisc {
+					cf()
+					return nil
+				}
 
-		if req.cmd == nbdCmdDisc {
-			break
-		}
-
-		s.reqCh <- req
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case s.reqCh <- req:
+				}
+			}
+		})
 	}
+
+	err := g.Wait()
 	close(s.reqCh)
+	if err != nil {
+		s.Disconnect()
+	}
 
 	if err != nil {
 		log.Println("Error in main server loop", err)

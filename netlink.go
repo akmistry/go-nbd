@@ -12,6 +12,10 @@ type NetlinkConn struct {
 	fd             int
 	sizeBytes      uint64
 	blockSizeBytes uint64
+	index          int
+	readOnly       bool
+	supportsTrim   bool
+	supportsFlush  bool
 }
 
 func NewNetlinkConn() (*NetlinkConn, error) {
@@ -41,11 +45,43 @@ func (c *NetlinkConn) SetBlockSize(size uint64) {
 	c.blockSizeBytes = size
 }
 
+func (c *NetlinkConn) SetIndex(index int) {
+	c.index = index
+}
+
+func (c *NetlinkConn) SetReadonly(ro bool) {
+	c.readOnly = ro
+}
+
+func (c *NetlinkConn) SetSupportsTrim(trim bool) {
+	c.supportsTrim = trim
+}
+
+func (c *NetlinkConn) SetSupportsFlush(flush bool) {
+	c.supportsFlush = flush
+}
+
 func (c *NetlinkConn) Connect() error {
 	enc := netlink.NewAttributeEncoder()
-	enc.Uint32(nbdNlAttrIndex, 0)
+	if c.index >= 0 {
+		enc.Uint32(nbdNlAttrIndex, uint32(c.index))
+	}
 	enc.Uint64(nbdNlAttrSizeBytes, c.sizeBytes)
 	enc.Uint64(nbdNlAttrBlockSizeBytes, c.blockSizeBytes)
+	enc.Uint64(nbdNlAttrClientFlags, nbdClientFlagDestroyOnDisconnect)
+	var flags uint64
+	if c.readOnly {
+		flags |= nbdFlagReadOnly
+	}
+	if c.supportsTrim {
+		flags |= nbdFlagSendTrim
+	}
+	if c.supportsFlush {
+		flags |= nbdFlagSendFlush
+	}
+	if flags != 0 {
+		enc.Uint64(nbdNlAttrServerFlags, flags)
+	}
 
 	enc.Nested(nbdNlAttrSockets, func(nae *netlink.AttributeEncoder) error {
 		nae.Nested(nbdNlSockItem, func(nae *netlink.AttributeEncoder) error {
@@ -73,7 +109,8 @@ func (c *NetlinkConn) Connect() error {
 
 func (c *NetlinkConn) Disconnect() error {
 	enc := netlink.NewAttributeEncoder()
-	enc.Uint32(nbdNlAttrIndex, 0)
+	// TODO: Use correct index if auto-discovered
+	enc.Uint32(nbdNlAttrIndex, uint32(c.index))
 
 	buf, err := enc.Encode()
 	if err != nil {

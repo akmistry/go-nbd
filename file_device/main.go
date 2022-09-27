@@ -7,8 +7,13 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/akmistry/go-nbd"
+)
+
+const (
+	blockSize = 512
 )
 
 var (
@@ -20,7 +25,7 @@ func main() {
 	flag.Parse()
 
 	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
+		log.Println("http: ", http.ListenAndServe("localhost:6060", nil))
 	}()
 
 	if *file == "" {
@@ -32,18 +37,29 @@ func main() {
 	if err != nil {
 		log.Panicln(err)
 	}
+	defer f.Close()
 
-	nbdDevice, err := nbd.NewServer(*dev, NewFileBlockDevice(f))
+	fi, err := f.Stat()
+	if err != nil {
+		log.Panicln(err)
+	}
+	size := fi.Size()
+	size -= size % blockSize
+
+	opts := nbd.BlockDeviceOptions{
+		BlockSize: blockSize,
+	}
+	nbdDevice, err := nbd.NewServer(*dev, NewFileBlockDevice(f), size, opts)
 	if err != nil {
 		log.Panicln(err)
 	}
 
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt)
+	signal.Notify(ch, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM)
 	go func() {
 		<-ch
 		nbdDevice.Disconnect()
 	}()
 
-	log.Println(nbdDevice.Run())
+	log.Println("nbd: ", nbdDevice.Run())
 }

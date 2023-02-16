@@ -1,7 +1,13 @@
 package nbd
 
 import (
+	"sync"
+
 	"github.com/akmistry/go-util/bufferpool"
+)
+
+var (
+	bufPool = sync.Pool{New: func() any { return new(Buffer) }}
 )
 
 type Buffer struct {
@@ -9,9 +15,9 @@ type Buffer struct {
 }
 
 func NewBuffer(size int) *Buffer {
-	return &Buffer{
-		buf: bufferpool.Get(size),
-	}
+	b := bufPool.Get().(*Buffer)
+	b.buf = bufferpool.Get(size)
+	return b
 }
 
 func (b *Buffer) Release() {
@@ -19,4 +25,5 @@ func (b *Buffer) Release() {
 		bufferpool.Put(b.buf)
 	}
 	b.buf = nil
+	bufPool.Put(b)
 }

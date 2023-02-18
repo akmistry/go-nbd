@@ -1,6 +1,7 @@
 package nbd
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -30,35 +31,31 @@ type nbdReply struct {
 var (
 	nbo = binary.BigEndian
 
-	reqHeaderPool = sync.Pool{New: func() any {
-		b := make([]byte, 28)
-		return &b
-	}}
-
 	replyHeaderPool = sync.Pool{New: func() any {
 		b := make([]byte, 16)
 		return &b
 	}}
 )
 
-func readRequest(r io.Reader, req *nbdRequest) error {
-	hp := reqHeaderPool.Get().(*[]byte)
-	defer reqHeaderPool.Put(hp)
-
-	_, err := io.ReadFull(r, *hp)
+func readRequest(r *bufio.Reader, req *nbdRequest) error {
+	h, err := r.Peek(28)
 	if err != nil {
 		return err
 	}
-	magic := nbo.Uint32(*hp)
+	magic := nbo.Uint32(h)
 	if magic != nbdRequestMagic {
 		return fmt.Errorf("Unexpected request magic 0x%x", magic)
 	}
-	req.flags = nbo.Uint16((*hp)[4:])
-	req.cmd = nbo.Uint16((*hp)[6:])
-	req.handle = nbo.Uint64((*hp)[8:])
-	req.offset = nbo.Uint64((*hp)[16:])
-	req.length = nbo.Uint32((*hp)[24:])
+	req.flags = nbo.Uint16(h[4:])
+	req.cmd = nbo.Uint16(h[6:])
+	req.handle = nbo.Uint64(h[8:])
+	req.offset = nbo.Uint64(h[16:])
+	req.length = nbo.Uint32(h[24:])
 	req.data = nil
+	_, err = r.Discard(28)
+	if err != nil {
+		panic(err)
+	}
 	if req.cmd == nbdCmdWrite {
 		req.data = NewBuffer(int(req.length))
 		_, err = io.ReadFull(r, req.data.buf)

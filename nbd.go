@@ -1,6 +1,7 @@
 package nbd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ const (
 	// Maximum number of concurrent operations
 	// (block device queue depth: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/block/nbd.c?h=v5.15#n1692)
 	MaxConcurrentOps = 128
+
+	readBufferSize = 1024 * 1024
 )
 
 var (
@@ -340,9 +343,10 @@ func (s *NbdServer) do(f *os.File) {
 	}()
 
 	var err error
+	bufr := bufio.NewReaderSize(f, readBufferSize)
 	for {
 		req := reqPool.Get().(*nbdRequest)
-		err = readRequest(f, req)
+		err = readRequest(bufr, req)
 		if err != nil {
 			break
 		}

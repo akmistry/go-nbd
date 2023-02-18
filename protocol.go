@@ -58,7 +58,7 @@ func readRequest(r *bufio.Reader, req *nbdRequest) error {
 	}
 	if req.cmd == nbdCmdWrite {
 		req.data = NewBuffer(int(req.length))
-		_, err = io.ReadFull(r, req.data.buf)
+		_, err = io.ReadFull(r, *req.data.buf)
 		if err != nil {
 			req.data.Release()
 			return err
@@ -77,7 +77,7 @@ func writeReply(w io.Writer, reply *nbdReply) error {
 	if reply.data != nil && !fileOk {
 		// TODO: Determine if the total cost of doing a single write is smaller
 		// than doing two (without the alloc)
-		b = make([]byte, 16+len(reply.data.buf))
+		b = make([]byte, 16+len(*reply.data.buf))
 	} else {
 		b = *hp
 	}
@@ -88,8 +88,8 @@ func writeReply(w io.Writer, reply *nbdReply) error {
 		if fileOk {
 			iov := make([][]byte, 2)
 			iov[0] = b
-			iov[1] = reply.data.buf
-			rem := len(b) + len(reply.data.buf)
+			iov[1] = *reply.data.buf
+			rem := len(b) + len(*reply.data.buf)
 
 			for {
 				n, err := unix.Writev(int(osf.Fd()), iov)
@@ -122,7 +122,7 @@ func writeReply(w io.Writer, reply *nbdReply) error {
 				}
 			}
 		}
-		copy(b[16:], reply.data.buf)
+		copy(b[16:], *reply.data.buf)
 	}
 	_, err := w.Write(b)
 	return err

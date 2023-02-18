@@ -259,9 +259,9 @@ func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
 	switch req.cmd {
 	case nbdCmdRead:
 		reply.data = NewBuffer(int(req.length))
-		_, err = s.block.ReadAt(reply.data.buf, int64(req.offset))
+		_, err = s.block.ReadAt(*reply.data.buf, int64(req.offset))
 	case nbdCmdWrite:
-		_, err = s.block.WriteAt(req.data.buf, int64(req.offset))
+		_, err = s.block.WriteAt(*req.data.buf, int64(req.offset))
 	case nbdCmdFlush:
 		err = s.block.(BlockDeviceFlusher).Flush()
 	case nbdCmdTrim:

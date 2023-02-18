@@ -11,7 +11,7 @@ var (
 )
 
 type Buffer struct {
-	buf []byte
+	buf *[]byte
 }
 
 func NewBuffer(size int) *Buffer {

@@ -258,8 +258,14 @@ func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
 	var err error
 	switch req.cmd {
 	case nbdCmdRead:
+		var n int
 		reply.data = NewBuffer(int(req.length))
-		_, err = s.block.ReadAt(*reply.data.buf, int64(req.offset))
+		n, err = s.block.ReadAt(*reply.data.buf, int64(req.offset))
+		if err == io.EOF && n == len(*reply.data.buf) {
+			// io.ReaderAt is allowed to return EOF on a complete read, which should
+			// not be treated an an error.
+			err = nil
+		}
 	case nbdCmdWrite:
 		_, err = s.block.WriteAt(*req.data.buf, int64(req.offset))
 	case nbdCmdFlush:

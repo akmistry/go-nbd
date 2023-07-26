@@ -275,7 +275,7 @@ func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
 		err = ErrUnsupported
 	}
 	if err != nil {
-		log.Printf("request error: %v", err)
+		log.Printf("NBD %v error: %v", req, err)
 		reply.err = nbdEio
 		//return nil, err
 	}

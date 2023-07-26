@@ -22,6 +22,29 @@ type nbdRequest struct {
 	data   *Buffer
 }
 
+func (r *nbdRequest) String() string {
+	name := "<Unsupported>"
+	args := ""
+	switch r.cmd {
+	case nbdCmdRead:
+		name = "Read"
+		args = fmt.Sprintf("offset: %d, length: %d", r.offset, r.length)
+	case nbdCmdWrite:
+		name = "Write"
+		args = fmt.Sprintf("offset: %d, length: %d", r.offset, len(*r.data.buf))
+	case nbdCmdFlush:
+		name = "Flush"
+	case nbdCmdTrim:
+		name = "Trim"
+		args = fmt.Sprintf("offset: %d, length: %d", r.offset, r.length)
+	case nbdCmdCache:
+		name = "Cache"
+	case nbdCmdWriteZeroes:
+		name = "WriteZeros"
+	}
+	return fmt.Sprintf("%s(%s)", name, args)
+}
+
 type nbdReply struct {
 	handle uint64
 	err    uint32

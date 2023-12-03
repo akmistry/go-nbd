@@ -69,7 +69,6 @@ type NbdServer struct {
 	nlConn *NetlinkConn
 	index  int
 
-	reqCh  chan *nbdRequest
 	doneCh chan bool
 }
 
@@ -114,7 +113,6 @@ func NewServerFromFd(devFd int, block BlockDevice, size int64, opts BlockDeviceO
 		size:   size,
 		devFd:  devFd,
 		block:  block,
-		reqCh:  make(chan *nbdRequest),
 		doneCh: make(chan bool),
 	}, nil
 }
@@ -140,7 +138,6 @@ func NewServerWithNetlink(index int, block BlockDevice, size int64, opts BlockDe
 		block:  block,
 		nlConn: nl,
 		index:  index,
-		reqCh:  make(chan *nbdRequest),
 		doneCh: make(chan bool),
 	}, nil
 }
@@ -301,6 +298,8 @@ func (s *NbdServer) do(f *os.File) {
 		workers = DefaultConcurrentOps
 	}
 
+	reqCh := make(chan *nbdRequest, workers)
+
 	for i := 0; i < workers; i++ {
 		g.Go(func() error {
 			var req *nbdRequest
@@ -308,7 +307,7 @@ func (s *NbdServer) do(f *os.File) {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case req = <-s.reqCh:
+				case req = <-reqCh:
 					if req == nil {
 						return nil
 					}
@@ -361,9 +360,9 @@ func (s *NbdServer) do(f *os.File) {
 			break
 		}
 
-		s.reqCh <- req
+		reqCh <- req
 	}
-	close(s.reqCh)
+	close(reqCh)
 
 	if err != nil {
 		log.Println("Error in main server loop", err)

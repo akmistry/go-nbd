@@ -243,22 +243,22 @@ func (s *NbdServer) Disconnect() error {
 
 var (
 	reqPool   = sync.Pool{New: func() interface{} { return new(nbdRequest) }}
-	replyPool = sync.Pool{New: func() interface{} { return new(nbdReply) }}
+	replyPool ReplyPool
 )
 
-func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
-	reply := replyPool.Get().(*nbdReply)
-	reply.handle = req.handle
-	reply.err = 0
-	reply.data = nil
+func (s *NbdServer) doRequest(req *nbdRequest) *Reply {
+	writeBufSize := 0
+	if req.cmd == nbdCmdRead {
+		writeBufSize = int(req.length)
+	}
+	reply := replyPool.Get(req.handle, writeBufSize)
 
 	var err error
 	switch req.cmd {
 	case nbdCmdRead:
 		var n int
-		reply.data = NewBuffer(int(req.length))
-		n, err = s.block.ReadAt(*reply.data.buf, int64(req.offset))
-		if err == io.EOF && n == len(*reply.data.buf) {
+		n, err = s.block.ReadAt(reply.Buffer(), int64(req.offset))
+		if err == io.EOF && n == int(req.length) {
 			// io.ReaderAt is allowed to return EOF on a complete read, which should
 			// not be treated an an error.
 			err = nil
@@ -279,10 +279,9 @@ func (s *NbdServer) doRequest(req *nbdRequest) (*nbdReply, error) {
 	}
 	if err != nil {
 		log.Printf("NBD %v error: %v", req, err)
-		reply.err = nbdEio
-		//return nil, err
+		reply.SetError(nbdEio)
 	}
-	return reply, nil
+	return reply
 }
 
 func (s *NbdServer) do(f *os.File) {
@@ -313,10 +312,7 @@ func (s *NbdServer) do(f *os.File) {
 					}
 				}
 
-				reply, err := s.doRequest(req)
-				if err != nil {
-					return err
-				}
+				reply := s.doRequest(req)
 				if req.data != nil {
 					req.data.Release()
 					req.data = nil
@@ -324,18 +320,14 @@ func (s *NbdServer) do(f *os.File) {
 				reqPool.Put(req)
 
 				replyLock.Lock()
-				err = writeReply(f, reply)
+				err := reply.Send(f)
 				replyLock.Unlock()
 
-				if reply.data != nil {
-					reply.data.Release()
-					reply.data = nil
-				}
+				replyPool.Put(reply)
 				if err != nil {
 					log.Printf("Error writing NBD reply: %v", err)
 					return err
 				}
-				replyPool.Put(reply)
 			}
 		})
 	}

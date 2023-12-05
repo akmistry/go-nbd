@@ -242,11 +242,11 @@ func (s *NbdServer) Disconnect() error {
 }
 
 var (
-	reqPool   = sync.Pool{New: func() interface{} { return new(nbdRequest) }}
+	reqPool   RequestPool
 	replyPool ReplyPool
 )
 
-func (s *NbdServer) doRequest(req *nbdRequest) *Reply {
+func (s *NbdServer) doRequest(req *Request) *Reply {
 	writeBufSize := 0
 	if req.cmd == nbdCmdRead {
 		writeBufSize = int(req.length)
@@ -264,7 +264,7 @@ func (s *NbdServer) doRequest(req *nbdRequest) *Reply {
 			err = nil
 		}
 	case nbdCmdWrite:
-		_, err = s.block.WriteAt(*req.data.buf, int64(req.offset))
+		_, err = s.block.WriteAt(req.Buffer(), int64(req.offset))
 	case nbdCmdFlush:
 		err = s.block.(BlockDeviceFlusher).Flush()
 	case nbdCmdTrim:
@@ -297,11 +297,11 @@ func (s *NbdServer) do(f *os.File) {
 		workers = DefaultConcurrentOps
 	}
 
-	reqCh := make(chan *nbdRequest, workers)
+	reqCh := make(chan *Request, workers)
 
 	for i := 0; i < workers; i++ {
 		g.Go(func() error {
-			var req *nbdRequest
+			var req *Request
 			for {
 				select {
 				case <-ctx.Done():
@@ -313,10 +313,6 @@ func (s *NbdServer) do(f *os.File) {
 				}
 
 				reply := s.doRequest(req)
-				if req.data != nil {
-					req.data.Release()
-					req.data = nil
-				}
 				reqPool.Put(req)
 
 				replyLock.Lock()
@@ -342,8 +338,7 @@ func (s *NbdServer) do(f *os.File) {
 	var err error
 	bufr := bufio.NewReaderSize(f, readBufferSize)
 	for {
-		req := reqPool.Get().(*nbdRequest)
-		err = readRequest(bufr, req)
+		req, err := reqPool.Recv(bufr)
 		if err != nil {
 			break
 		}

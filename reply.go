@@ -44,18 +44,17 @@ func (r *Reply) Send(w io.Writer) error {
 }
 
 type ReplyPool struct {
-	pools     map[int]*sync.Pool
-	poolsOnce sync.Once
-	lock      sync.Mutex
-}
-
-func (p *ReplyPool) initPools() {
-	p.pools = make(map[int]*sync.Pool)
+	pools map[int]*sync.Pool
+	lock  sync.Mutex
 }
 
 func (p *ReplyPool) getPool(size int) *sync.Pool {
 	p.lock.Lock()
 	defer p.lock.Unlock()
+
+	if p.pools == nil {
+		p.pools = make(map[int]*sync.Pool)
+	}
 
 	pool := p.pools[size]
 	if pool == nil {
@@ -68,8 +67,6 @@ func (p *ReplyPool) getPool(size int) *sync.Pool {
 }
 
 func (p *ReplyPool) Get(handle uint64, size int) *Reply {
-	p.poolsOnce.Do(p.initPools)
-
 	r := p.getPool(size).Get().(*Reply)
 	r.handle = handle
 	r.err = 0
@@ -77,8 +74,6 @@ func (p *ReplyPool) Get(handle uint64, size int) *Reply {
 }
 
 func (p *ReplyPool) Put(r *Reply) {
-	p.poolsOnce.Do(p.initPools)
-
 	size := r.BufferSize()
 	p.getPool(size).Put(r)
 }

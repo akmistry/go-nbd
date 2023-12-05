@@ -3,7 +3,6 @@ module github.com/akmistry/go-nbd
 go 1.19
 
 require (
-	github.com/akmistry/go-util v0.0.0-20230218095840-89c981669cf8
 	github.com/mdlayher/genetlink v1.3.1
 	github.com/mdlayher/netlink v1.7.1
 	golang.org/x/sync v0.1.0

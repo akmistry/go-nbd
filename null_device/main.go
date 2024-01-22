@@ -7,6 +7,8 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/akmistry/go-nbd"
@@ -14,11 +16,13 @@ import (
 
 const (
 	blockSize = 4096
+	nbdPrefix = "/dev/nbd"
 )
 
 var (
-	dev  = flag.String("device", "/dev/nbd0", "Path to /deb/nbdX device")
-	size = flag.Int64("size", 64*1024*1024*1024, "Size of device, in bytes")
+	dev        = flag.String("device", "/dev/nbd0", "Path to /dev/nbdX device")
+	size       = flag.Int64("size", 64*1024*1024*1024, "Size of device, in bytes")
+	useNetlink = flag.Bool("use-netlink", true, "Use netlink to initiate nbd")
 )
 
 type nullDevice struct {
@@ -46,7 +50,18 @@ func main() {
 		BlockSize:     blockSize,
 		ConcurrentOps: 4,
 	}
-	nbdDevice, err := nbd.NewServer(*dev, nullDevice{}, *size, opts)
+
+	var err error
+	var nbdDevice *nbd.NbdServer
+	if *useNetlink {
+		index, err := strconv.ParseUint(strings.TrimPrefix(*dev, nbdPrefix), 10, 32)
+		if err != nil {
+			log.Panicln(err)
+		}
+		nbdDevice, err = nbd.NewServerWithNetlink(int(index), nullDevice{}, *size, opts)
+	} else {
+		nbdDevice, err = nbd.NewServer(*dev, nullDevice{}, *size, opts)
+	}
 	if err != nil {
 		log.Panicln(err)
 	}
